@@ -29,6 +29,7 @@ import argparse
 import numpy as np
 import sys
 import queue
+import uuid
 
 import tritonclient.grpc as grpcclient
 from tritonclient.utils import InferenceServerException
@@ -120,9 +121,11 @@ if __name__ == '__main__':
     # non-sequence requests.
     sequence_id0 = 1000 + FLAGS.offset * 2
     sequence_id1 = 1001 + FLAGS.offset * 2
+    sequence_id2 = str(uuid.uuid4())
 
     result0_list = []
     result1_list = []
+    result2_list = []
 
     user_data = UserData()
 
@@ -132,6 +135,9 @@ if __name__ == '__main__':
         sync_send(triton_client, result1_list,
                   [100] + [-1 * val for val in values], batch_size,
                   sequence_id1, model_name, model_version)
+        sync_send(triton_client, result2_list,
+                  [20] + [-2 * val for val in values], batch_size, sequence_id2,
+                  model_name, model_version)
     except InferenceServerException as error:
         print(error)
         sys.exit(1)
@@ -139,19 +145,22 @@ if __name__ == '__main__':
     for i in range(len(result0_list)):
         seq0_expected = 1 if (i == 0) else values[i - 1]
         seq1_expected = 101 if (i == 0) else values[i - 1] * -1
+        seq2_expected = 21 if (i == 0) else values[i - 1] * -2
         # The dyna_sequence custom backend adds the correlation ID
         # to the last request in a sequence.
+        # Note: It does not support string sequence IDs
         if FLAGS.dyna and (i != 0) and (values[i - 1] == 1):
             seq0_expected += sequence_id0
             seq1_expected += sequence_id1
 
         print("[" + str(i) + "] " + str(result0_list[i][0][0]) + " : " +
-              str(result1_list[i][0][0]))
+              str(result1_list[i][0][0]) + " : " + str(result2_list[i][0][0]))
 
         if ((seq0_expected != result0_list[i][0][0]) or
-            (seq1_expected != result1_list[i][0][0])):
+            (seq1_expected != result1_list[i][0][0]) or
+            (seq2_expected != result2_list[i][0][0])):
             print("[ expected ] " + str(seq0_expected) + " : " +
-                  str(seq1_expected))
+                  str(seq1_expected) + " : " + str(seq2_expected))
             sys.exit(1)
 
     print("PASS: Sequence")

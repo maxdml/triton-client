@@ -78,7 +78,10 @@ def _get_inference_request(model_name, inputs, model_version, request_id,
         for infer_output in outputs:
             request.outputs.extend([infer_output._get_tensor()])
     if sequence_id != 0:
-        request.parameters['sequence_id'].int64_param = sequence_id
+        if isinstance(sequence_id, str):
+            request.parameters['sequence_id'].string_param = sequence_id
+        else:
+            request.parameters['sequence_id'].int64_param = sequence_id
         request.parameters['sequence_start'].bool_param = sequence_start
         request.parameters['sequence_end'].bool_param = sequence_end
     if priority != 0:
@@ -100,6 +103,7 @@ def _grpc_compression_type(algorithm_str):
         "The provided client-side compression algorithm is not supported... using no compression"
     )
     return grpc.Compression.NoCompression
+
 
 class KeepAliveOptions:
     """A KeepAliveOptions object is used to encapsulate GRPC KeepAlive
@@ -139,7 +143,7 @@ class KeepAliveOptions:
                  http2_max_pings_without_data=2):
         self.keepalive_time_ms = keepalive_time_ms
         self.keepalive_timeout_ms = keepalive_timeout_ms
-        self.keepalive_permit_without_calls = keepalive_permit_without_calls 
+        self.keepalive_permit_without_calls = keepalive_permit_without_calls
         self.http2_max_pings_without_data = http2_max_pings_without_data
 
 
@@ -207,11 +211,11 @@ class InferenceServerClient:
             ('grpc.max_receive_message_length', MAX_GRPC_MESSAGE_SIZE),
             ('grpc.keepalive_time_ms', keepalive_options.keepalive_time_ms),
             ('grpc.keepalive_timeout_ms',
-                keepalive_options.keepalive_timeout_ms),
+             keepalive_options.keepalive_timeout_ms),
             ('grpc.keepalive_permit_without_calls',
-                keepalive_options.keepalive_permit_without_calls),
-            ('grpc.http2.max_pings_without_data', 
-                keepalive_options.http2_max_pings_without_data),
+             keepalive_options.keepalive_permit_without_calls),
+            ('grpc.http2.max_pings_without_data',
+             keepalive_options.http2_max_pings_without_data),
         ]
 
         if ssl:
