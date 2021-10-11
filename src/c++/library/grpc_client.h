@@ -33,6 +33,8 @@
 #include "ipc.h"
 #include "model_config.pb.h"
 
+class InferResultGrpc;
+
 namespace triton { namespace client {
 
 /// The key-value map type to be included in the request
