@@ -16,7 +16,50 @@ namespace tc = triton::client;
     }                                                              \
   }
 
+static inline uint64_t rdtscp(uint32_t *auxp) {
+    uint32_t a, d, c;
+    asm volatile("rdtscp" : "=a" (a), "=d" (d), "=c" (c));
+    if (auxp)
+        *auxp = c;
+    return ((uint64_t)a) | (((uint64_t)d) << 32);
+}
+
+static inline void cpu_serialize(void) {
+        asm volatile("xorl %%eax, %%eax\n\t"
+             "cpuid" : : : "%rax", "%rbx", "%rcx", "%rdx");
+}
+
+float cycles_per_ns;
+// From Adam's base OS
+inline int time_calibrate_tsc(void) {
+    struct timespec sleeptime;
+    sleeptime.tv_nsec = 5E8; /* 1/2 second */
+    struct timespec t_start, t_end;
+
+    cpu_serialize();
+    if (clock_gettime(CLOCK_MONOTONIC_RAW, &t_start) == 0) {
+        uint64_t ns, end, start;
+        double secs;
+
+        start = rdtscp(NULL);
+        nanosleep(&sleeptime, NULL);
+        clock_gettime(CLOCK_MONOTONIC_RAW, &t_end);
+        end = rdtscp(NULL);
+        ns = ((t_end.tv_sec - t_start.tv_sec) * 1E9);
+        ns += (t_end.tv_nsec - t_start.tv_nsec);
+
+        secs = (double)ns / 1000;
+        cycles_per_ns = ((uint64_t)((end - start) / secs)) / 1000.0;
+        printf("time: detected %.03f ticks / us\n", cycles_per_ns);
+
+        return 0;
+    }
+
+    return -1;
+}
+
 std::vector<double> latencies;
+std::vector<uint64_t> send_times;
 uint32_t recv_requests = 0;
 std::mutex cbtex;
 int receive_callback(tc::InferResult *result) {
@@ -24,11 +67,9 @@ int receive_callback(tc::InferResult *result) {
         {
             // lock latency vector
             std::lock_guard<std::mutex> lock(cbtex);
-            /*
-            uint64_t end_time = std::chrono::steady_clock::now() - std::chrono::duration_cast<std::chrono::microseconds>(
-            ).count();
-            */
-            uint64_t end_time = reinterpret_cast<InferResultGrpc>(result)->Timer()::Duration(SEND_START, SEND_END);
+            std::string rid;
+            result->Id(&rid);
+            uint64_t end_time = rdtscp(NULL) - send_times[std::stoi(rid)];
             latencies[recv_requests++] = end_time;
         }
     } else {
@@ -133,10 +174,14 @@ int main(int argc, char** argv) {
         int32_t inflight = send_index - recv_requests;
         // While we are due some requests and not hitting max outstanding cap, send new requests
         while (iter_time > next_send_time and iter_time < end_time and inflight < max_num_jobs) {
+            options.request_id_ = std::to_string(send_index);
             FAIL_IF_ERR(
                 client->AsyncInfer(receive_callback, options, inputs, outputs, http_headers),
                 "Unable to run model");
-            send_index++;
+            {
+                std::lock_guard<std::mutex> lock(cbtex);
+                send_times[send_index++] = rdtscp(NULL);
+            }
             auto gen_us = std::chrono::microseconds(static_cast<uint64_t>(exp_dist(seed)));
             next_send_time = iter_time + gen_us;
         }
@@ -149,12 +194,13 @@ int main(int argc, char** argv) {
     }
 
     // Process latencies
+    int32_t cycles_per_us = cycles_per_ns * 1e3;
     std::sort(latencies.begin(), latencies.end());
-    std::cout << "median: " << latencies[latencies.size() / 2]
-              << " 75th: " << latencies[latencies.size() * .75]
-              << " 90th: " << latencies[latencies.size() * .90]
-              << " 99th: " << latencies[latencies.size() * .99]
-              << " 99.9th: " << latencies[latencies.size() * .999]
+    std::cout << "median: " << latencies[latencies.size() / 2] / cycles_per_us
+              << " 75th: " << latencies[latencies.size() * .75] / cycles_per_us
+              << " 90th: " << latencies[latencies.size() * .90] / cycles_per_us
+              << " 99th: " << latencies[latencies.size() * .99] / cycles_per_us
+              << " 99.9th: " << latencies[latencies.size() * .999] / cycles_per_us
               //<< " average: " << average
               << std::endl;
      return 0;
