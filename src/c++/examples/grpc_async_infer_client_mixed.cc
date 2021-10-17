@@ -84,6 +84,9 @@ int main(int argc, char** argv) {
     tc::Headers http_headers;
     uint32_t client_timeout = 0;
 
+    send_times.reserve(1e6);
+    latencies.reserve(1e6);
+
     const char *server_ip_str = argv[1];
     const char *server_port = argv[2];
     std::string url(server_ip_str);
@@ -109,56 +112,43 @@ int main(int argc, char** argv) {
     );
 
     /* Setup input and output */
-    std::vector<int32_t> input0_data(16);
-    std::vector<int32_t> input1_data(16);
-    for (size_t i = 0; i < 16; ++i) {
-        input0_data[i] = i;
-        input1_data[i] = 1;
+    std::vector<std::vector<std::vector<int32_t>>> input0_data(3, std::vector<std::vector<int32_t>>(224, std::vector<int32_t>(224)));
+    //std::vector<std::vector<int32_t>> input0_data(3, std::vector<int32_t>(224));
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 224; ++j) {
+            for (size_t k = 0; k < 224; ++k) {
+                input0_data[i][j][k] = k;
+            }
+        }
     }
-    std::vector<int64_t> shape{1, 16};
+    std::vector<int64_t> shape{1, 3, 224, 224};
     // Initialize the inputs with the data.
     tc::InferInput* input0;
-    tc::InferInput* input1;
     FAIL_IF_ERR(
-        tc::InferInput::Create(&input0, "INPUT0", shape, "INT32"), "unable to get INPUT0"
+        tc::InferInput::Create(&input0, "input_1", shape, "FP32"), "unable to get INPUT0"
      );
     std::shared_ptr<tc::InferInput> input0_ptr;
     input0_ptr.reset(input0);
     FAIL_IF_ERR(
-        tc::InferInput::Create(&input1, "INPUT1", shape, "INT32"), "unable to get INPUT1"
-    );
-    std::shared_ptr<tc::InferInput> input1_ptr;
-    input1_ptr.reset(input1);
-    FAIL_IF_ERR(
         input0_ptr->AppendRaw(
             reinterpret_cast<uint8_t*>(&input0_data[0]),
             input0_data.size() * sizeof(int32_t)),
-        "unable to set data for INPUT0");
+        "unable to set data for INPUT0"
+    );
+    // Generate the outputs to be requested.
+    tc::InferRequestedOutput* output0;
     FAIL_IF_ERR(
-        input1_ptr->AppendRaw(
-            reinterpret_cast<uint8_t*>(&input1_data[0]),
-            input1_data.size() * sizeof(int32_t)),
-        "unable to set data for INPUT1");
-     // Generate the outputs to be requested.
-     tc::InferRequestedOutput* output0;
-     tc::InferRequestedOutput* output1;
-     FAIL_IF_ERR(
-         tc::InferRequestedOutput::Create(&output0, "OUTPUT0"),
-         "unable to get 'OUTPUT0'");
-     std::shared_ptr<tc::InferRequestedOutput> output0_ptr;
-     output0_ptr.reset(output0);
-     FAIL_IF_ERR(
-         tc::InferRequestedOutput::Create(&output1, "OUTPUT1"),
-         "unable to get 'OUTPUT1'");
-     std::shared_ptr<tc::InferRequestedOutput> output1_ptr;
-     output1_ptr.reset(output1);
+        tc::InferRequestedOutput::Create(&output0, "output_0"),
+        "unable to get 'OUTPUT0'");
+    std::shared_ptr<tc::InferRequestedOutput> output0_ptr;
+    output0_ptr.reset(output0);
 
     // The inference settings.
     tc::InferOptions options(model_name);
     options.model_version_ = model_version;
     options.client_timeout_ = 0; // FIXME unlimited timeout?
-    std::vector<tc::InferInput*> inputs = {input0_ptr.get(), input1_ptr.get()};
-    std::vector<const tc::InferRequestedOutput*> outputs = {output0_ptr.get(), output1_ptr.get()};
+    std::vector<tc::InferInput*> inputs = {input0_ptr.get()};
+    std::vector<const tc::InferRequestedOutput*> outputs = {output0_ptr.get()};
 
     bool terminate = false;
     int32_t send_index = 0;
@@ -189,9 +179,11 @@ int main(int argc, char** argv) {
         if (next_send_time >= end_time or iter_time > end_time) {
             while (std::chrono::steady_clock::now() - start_time > max_duration.time_since_epoch()); // run grace period
             terminate = true;
-            std::cout << "Sending complete or iter_time > end_time" << std::endl;
+            //std::cout << "Sending complete or iter_time > end_time" << std::endl;
         }
     }
+
+    std::cout << "Sent: " << send_index << ". Received: " << recv_requests << std::endl;
 
     // Process latencies
     int32_t cycles_per_us = cycles_per_ns * 1e3;
