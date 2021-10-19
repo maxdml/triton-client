@@ -1,0 +1,5 @@
+rate: 100
+ratios: [.5, .5]
+uniform: false
+duration: 5
+models: [arcfaceresnet100-8, densenet121, googlenet, inception_v3, mnist-8, mobilenet_v2, resnet50, simple_identity, ultraface320]
