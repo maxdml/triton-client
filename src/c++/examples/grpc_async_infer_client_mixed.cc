@@ -163,10 +163,10 @@ class Schedule {
             // Generate the request itself
             uint32_t rid = base_rid + n_requests++;
             Request *cr = new Request();
+            requests.push_back(cr);
             assert(requests[rid] == cr);
             cr->id = rid;
             cr->model = model_list[cmd_idx];
-            requests.push_back(cr);
         }
         /*
         std::cout << "Created " << n_requests << " requests spanning " << duration << ":" << std::endl;
@@ -211,7 +211,7 @@ int create_model_io(std::shared_ptr<tc::InferInput> &input_ptr, std::shared_ptr<
                     const char *type, std::vector<int64_t> &shape) {
 
     assert(shape.size() == 4);
-    std::vector<std::vector<std::vector<int32_t>>> input_data;
+    std::vector<std::vector<std::vector<int32_t>>> input_data(shape[1], std::vector<std::vector<int32_t>>(shape[2], std::vector<int32_t>(shape[3])));
     for (size_t i = 0; i < shape[1]; ++i) {
         for (size_t j = 0; j < shape[2]; ++j) {
             for (size_t k = 0; k < shape[3]; ++k) {
