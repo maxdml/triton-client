@@ -2,6 +2,9 @@
 #include <string>
 #include "grpc_client.h"
 #include <random>
+#include <boost/program_options.hpp>
+#include <yaml-cpp/yaml.h>
+#include <tuple>
 
 namespace tc = triton::client;
 
@@ -30,6 +33,19 @@ static inline uint64_t rdtscp(uint32_t *auxp) {
 static inline void cpu_serialize(void) {
         asm volatile("xorl %%eax, %%eax\n\t"
              "cpuid" : : : "%rax", "%rbx", "%rcx", "%rdx");
+}
+
+uint64_t since_epoch(const std::chrono::steady_clock::time_point &time) {
+    return std::chrono::time_point_cast<std::chrono::nanoseconds>(time).time_since_epoch().count();
+}
+
+uint64_t ns_diff(const std::chrono::steady_clock::time_point &start,
+                 const std::chrono::steady_clock::time_point &end) {
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end-start).count();
+    if (ns < 0) {
+        ns = -1;
+    }
+    return ns;
 }
 
 float cycles_per_ns;
@@ -64,36 +80,41 @@ inline int time_calibrate_tsc(void) {
 /** WORKLOAD GENERATION STUFF */
 /******************************/
 
-std::unordered_map<std::string, std::tuple<tc::InferOptions, std::vector<tc::InferInput *>, std::vector<tc::InferRequestedOutput *>> options;
+class Model {
+    public: tc::InferOptions options;
+    public: std::vector<tc::InferInput *> inputs;
+    public: std::vector<const tc::InferRequestedOutput *> outputs;
+    public: const std::string name;
+    public: Model(std::string &n) : name(n), options(n) {}
+};
 
-class Request {
-    public: uint32_t model_id;
+class Request {
+    public: Model *model;
     public: uint64_t send_time;
     public: uint64_t receive_time;
     public: uint64_t latency;
     public: uint32_t id;
-}
+};
 
 class Schedule {
     public: std::chrono::seconds duration;
-    public: std::chrono::seconds max_duration;
-    public: tp start_time;
-    public: tp end_time;
-    public: tp last_send_time;
-    public: uint32_t n_requests = 0;
+    public: std::chrono::steady_clock::time_point start_time;
+    public: std::chrono::steady_clock::time_point end_time;
+    public: std::chrono::steady_clock::time_point last_send_time;
     public: double rate = 0;
     public: bool uniform = false;
     public: std::vector<double> ratios;
-    public: std::vector<tp> send_times;
+    public: std::vector<std::chrono::steady_clock::time_point> send_times;
     public: uint32_t send_index = 0;
     public: uint32_t recv_requests = 0;
     public: uint32_t attempts = 0;
     public: uint32_t ev_count = 0;
     public: uint32_t n_skipped = 0;
+    public: uint32_t n_requests = 0;
     public: std::vector<Request *> requests;
     public: std::vector<std::string> models;
 
-    public: Schedule (uint32_t i) : schedule_id(i) {}
+    public: Schedule () {}
 
     // Goodput
     public: double getRequestsPerSecond() {
@@ -105,14 +126,14 @@ class Schedule {
         return ((double)send_index) / (ns_diff(start_time, last_send_time)/ 1e9);
     }
 
-    public: int gen_schedule(std::mt19937 &seed) {
+    public: int gen_schedule(std::mt19937 &seed, std::vector<Model *> model_list) {
         std::exponential_distribution<double> exp_dist(rate / 1e9);
         std::uniform_real_distribution<double> uniform_dist(0.0, 1.0);
         uint32_t base_rid = 0;
         std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
         uint64_t time = 0;
         uint64_t end_time = duration.count() * 1e9; // in ns
-        std::vector<uin16_t> type_counts(models.size(), 0);
+        std::vector<uint16_t> type_counts(models.size(), 0);
         while (time <= end_time) {
             // Select request type (0: short, 1:long)
             double r = uniform_dist(seed);
@@ -127,7 +148,7 @@ class Schedule {
             }
             cmd_idx >= 0 ? (void)0 : abort();
 
-            type_counts[req_offset + cmd_idx]++;
+            type_counts[cmd_idx]++;
 
             //Pick interval
             if (uniform) {
@@ -137,22 +158,24 @@ class Schedule {
                 uint64_t next_ns = exp_dist(seed);
                 time += next_ns;
             }
-            boost::chrono::nanoseconds send_time(time);
+            std::chrono::nanoseconds send_time(time);
             send_times.push_back(send_time + start_time); // Fill send time
             // Generate the request itself
             uint32_t rid = base_rid + n_requests++;
             Request *cr = new Request();
-            requests.push_back(cr);
             assert(requests[rid] == cr);
             cr->id = rid;
-            cr->model_id = cmd_idx;
+            cr->model = model_list[cmd_idx];
+            requests.push_back(cr);
         }
+        /*
         std::cout << "Created " << n_requests << " requests spanning " << duration << ":" << std::endl;
         for (int i = 0; i < models.size(); ++i) {
             if (type_counts[i] > 0) {
                 std::cout << req_type_str[i] << ": " << type_counts[i] << std::endl;
             }
         }
+        */
         return 0;
     }
 };
@@ -183,10 +206,11 @@ static int parse_args(int argc, char **argv, bpo::options_description &opts) {
     return 0;
 }
 
-int create_model_io(std::share<tc::InferInput> &input_ptr, std::shared<tc::InferRequestedOutput> &output_ptr,
+int create_model_io(std::shared_ptr<tc::InferInput> &input_ptr, std::shared_ptr<tc::InferRequestedOutput> &output_ptr,
                     const char *input_name, const char *output_name,
-                    const char *type, std::vector<int64_t> &shape) {
+                    const char *type, std::vector<int64_t> &shape) {
 
+    assert(shape.size() == 4);
     std::vector<std::vector<std::vector<int32_t>>> input_data;
     for (size_t i = 0; i < shape[1]; ++i) {
         for (size_t j = 0; j < shape[2]; ++j) {
@@ -196,7 +220,7 @@ int create_model_io(std::share<tc::InferInput> &input_ptr, std::shared<tc::Infer
         }
     }
     tc::InferInput *input;
-    FAIL_IF_ERR(tc::InferInput::Create(&input0, input_name.c_str(), shape, type.c_str()), "unable to get input");
+    FAIL_IF_ERR(tc::InferInput::Create(&input, input_name, shape, type), "unable to get input");
     input_ptr.reset(input);
     FAIL_IF_ERR(
         input_ptr->AppendRaw(
@@ -206,8 +230,7 @@ int create_model_io(std::share<tc::InferInput> &input_ptr, std::shared<tc::Infer
     );
 
     tc::InferRequestedOutput *output;
-    FAIL_IF_ERR(tc::InferRequestedOutput::Create(&output0, output_name.c_str()), "unable to get output");
-    std::shared_ptr<tc::InferRequestedOutput> output_ptr;
+    FAIL_IF_ERR(tc::InferRequestedOutput::Create(&output, output_name), "unable to get output");
     output_ptr.reset(output);
 
     return 0;
@@ -221,44 +244,45 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
         YAML::Node config = YAML::LoadFile(schedule_file);
         YAML::Node rate = config["rate"];
         YAML::Node duration = config["duration"];
-        YAML::NODE uniform = config["uniform"];
-        YAML::NODE ratios = config["ratios"];
-        YAML::NODE models = config["models"];
-        YAML::NODE versions = config["versions"];
+        YAML::Node uniform = config["uniform"];
+        YAML::Node ratios = config["ratios"];
+        YAML::Node models = config["models"];
+        YAML::Node versions = config["versions"];
 
         sched->rate = rate.as<double>();
         sched->duration = std::chrono::seconds(duration.as<uint64_t>());
-        sched->max_duration = std::chrono::seconds(duration.as<uint64_t>() + 2);
         sched->uniform = uniform.as<bool>();
         sched->models = models.as<std::vector<std::string>>();
         versions = versions.as<std::vector<uint16_t>>();
         sched->ratios = ratios.as<std::vector<double>>();
 
-        for (size_t i = 0; i < sched->models.size(); ++i) {
-            tc::InferOptions opts(model);
-            opts.model_version_ = versions[i];
-            opts.client_timeout_ = 0; // FIXME unlimited timeout?
-            if (model == "googlenet") {
+        std::vector<Model *> model_list;
+
+        std::random_device rd;
+        std::mt19937 seed(rd());
+        for (size_t i = 0; i < sched->models.size(); ++i) {
+            Model *model = new Model(sched->models[i]);
+            model->options.model_version_ = versions[i].as<char>();
+            model->options.client_timeout_ = 0; // FIXME unlimited timeout?
+            if (model->name == "googlenet") {
                 //std::vector<std::vector<std::vector<int32_t>>> input0_data(3, std::vector<std::vector<int32_t>>(224, std::vector<int32_t>(224)));
                 std::vector<int64_t> shape{1, 3, 224, 224};
                 // Initialize the inputs with the data.
                 std::shared_ptr<tc::InferInput> input_ptr;
                 std::shared_ptr<tc::InferRequestedOutput> output_ptr;
 
-                create_model_io(&intput, &output, "input_1", "output_0", "FP32", shape);
+                //FIXME this should probably be a method of the Request class
+                create_model_io(input_ptr, output_ptr, "input_1", "output_0", "FP32", shape);
 
                 // The inference settings.
-                std::vector<tc::InferInput*> inputs = {input_ptr.get()};
-                std::vector<const tc::InferRequestedOutput*> outputs = {output_ptr.get()};
-
-                options[model] = std::tuple<tc::InferOptions, std::vector<tc::InferInput *>, std::vector<tc::InferRequestedOutput *>(
-                    opts, inputs, outputs,
-                ):
+                model->inputs = {input_ptr.get()};
+                model->outputs = {output_ptr.get()};
             }
             //TODO the rest of the models
+            model_list.push_back(model);
         }
 
-        sched->gen_schedule();
+        sched->gen_schedule(seed, model_list);
     } catch (YAML::ParserException& e) {
         std::cout << "Failed to parse schedule: " << e.what() << std::endl;
         exit(1);
@@ -292,35 +316,28 @@ int receive_callback(tc::InferResult *result) {
 int main(int argc, char** argv) {
     bool verbose = false;
     tc::Headers http_headers;
-    uint32_t client_timeout = 0;
 
     send_times.reserve(1e6);
     latencies.reserve(1e6);
 
-
     /* Parse options */
     int max_concurrency;
     std::string label, schedule_file;
-    uint16_t remote_port;
-    std::string remote_host;
+    std::string remote_host, remote_port;
     std::string output_filename;
     std::string output_dirname;
-    int downsample = 0;
-    unsigned int collect_logs = 0;
     bpo::options_description desc{"Rate loop client options"};
     desc.add_options()
-        ("ip,I", bpo::value<std::vector<std::string>>(&remote_hosts)->multitoken()->required(), "server IPs")
-        ("port,P", bpo::value<std::vector<uint16_t>>(&remote_ports)->multitoken()->required(), "server's port")
+        ("ip,I", bpo::value<std::string>(&remote_host)->required(), "server IP")
+        ("port,P", bpo::value<std::string>(&remote_port)->required(), "server's port")
         ("label,l", bpo::value<std::string>(&label)->default_value("rateclient"), "experiment label")
         ("max-concurrency,m", bpo::value<int>(&max_concurrency)->default_value(-1), "maximum number of in-flight requests")
         ("schedule-file,s", bpo::value<std::string>(&schedule_file)->required(), "path to experiment schedule")
         ("out,o", bpo::value<std::string>(&output_filename), "path to output file (defaults to log directory)")
-        ("outdir,o", bpo::value<std::string>(&output_dirname), "name of output dir")
-        ("collect-logs", bpo::value<unsigned int>(&collect_logs), "Activate log collection")
-        ("sample,S", bpo::value<int>(&downsample), "-1: histogram, 0: full timeseries, >0: timeseries downsampled to this number");
+        ("outdir,o", bpo::value<std::string>(&output_dirname), "name of output dir");
 
     if (parse_args(argc, argv, desc)) {
-        PSP_ERROR("Error parsing arguments");
+        std::cerr << "Error parsing arguments" << std::endl;
         exit(-1);
     }
 
@@ -330,7 +347,7 @@ int main(int argc, char** argv) {
 
     // Parse schedule
     Schedule *sched = new Schedule();
-    parse_schedule(sched_file, sched);
+    parse_schedule(schedule_file, sched);
 
     std::unique_ptr<tc::InferenceServerGrpcClient> client;
     FAIL_IF_ERR(
@@ -338,41 +355,45 @@ int main(int argc, char** argv) {
         "unable to create grpc client"
     );
 
-    // TODO : update to use the schedule
+    // Set up a bunch of timing related variables
     bool terminate = false;
-    int32_t send_index = 0;
-    std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point next_send_time = start_time;
-    //auto duration = std::chrono::seconds(RUNTIME);
-    std::chrono::steady_clock::time_point end_time = start_time + std::chrono::seconds(RUNTIME);
-    std::chrono::steady_clock::time_point max_duration = end_time + std::chrono::seconds(2);
-    //auto max_duration =  std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::microseconds(end_time) + std::chrono::seconds(2));
-    std::chrono::steady_clock::time_point iter_time;
-    while (!terminate) {
+    sched->start_time = std::chrono::steady_clock::now();
+    std::chrono::nanoseconds start_offset = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            sched->start_time - sched->send_times[0]
+    );
+    std::vector<std::chrono::steady_clock::time_point>::iterator send_time_it = sched->send_times.begin();
+    std::chrono::steady_clock::time_point next_send_time = (*send_time_it + start_offset);
+    sched->end_time = sched->send_times.back() + start_offset;
+    std::chrono::steady_clock::time_point max_end_time = sched->end_time + std::chrono::seconds(2);
+    std::chrono::steady_clock::time_point iter_time = sched->start_time;
+    while (recv_requests < sched->n_requests and !terminate) {
         iter_time = std::chrono::steady_clock::now();
-        int32_t inflight = send_index - recv_requests;
+        int32_t inflight = sched->send_index - recv_requests;
         // While we are due some requests and not hitting max outstanding cap, send new requests
-        while (iter_time > next_send_time and iter_time < end_time and inflight < max_concurrency) {
-            options.request_id_ = std::to_string(send_index);
+        while (iter_time > next_send_time and iter_time < sched->end_time and inflight < max_concurrency) {
+            auto req = sched->requests[sched->send_index];
+            req->model->options.request_id_ = std::to_string(sched->send_index);
             FAIL_IF_ERR(
-                client->AsyncInfer(receive_callback, options, inputs, outputs, http_headers),
-                "Unable to run model");
+                client->AsyncInfer(receive_callback, req->model->options, req->model->inputs, req->model->outputs, http_headers),
+                "Unable to run model"
+            );
             {
                 std::lock_guard<std::mutex> lock(cbtex);
-                send_times[send_index++] = rdtscp(NULL);
+                send_times[sched->send_index++] = rdtscp(NULL);
             }
-            auto gen_us = std::chrono::microseconds(static_cast<uint64_t>(exp_dist(seed)));
-            next_send_time = iter_time + gen_us;
+            next_send_time = (*send_time_it + start_offset);
+            send_time_it++;
         }
         // Check whether we need to exit the sending loop
-        if (next_send_time >= end_time or iter_time > end_time) {
-            while (std::chrono::steady_clock::now() - start_time > max_duration.time_since_epoch()); // run grace period
+        if (next_send_time >= sched->end_time or iter_time > sched->end_time) {
+            while (std::chrono::steady_clock::now() - sched->start_time > max_end_time.time_since_epoch()); // run grace period
             terminate = true;
             //std::cout << "Sending complete or iter_time > end_time" << std::endl;
         }
     }
 
-    std::cout << "Sent: " << send_index << ". Received: " << recv_requests << std::endl;
+    std::cout << "Sent: " << sched->send_index << ". Received: " << recv_requests << std::endl;
+    sched->recv_requests = recv_requests;
 
     // Process latencies
     int32_t cycles_per_us = cycles_per_ns * 1e3;

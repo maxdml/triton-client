@@ -1,0 +1,6 @@
+rate: 100
+ratios: [.5, .5]
+uniform: false
+duration: 5
+models: [googlenet]
+versions: [1]
