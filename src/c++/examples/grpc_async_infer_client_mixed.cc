@@ -225,7 +225,7 @@ int create_model_io(std::shared_ptr<tc::InferInput> &input_ptr, std::shared_ptr<
     FAIL_IF_ERR(
         input_ptr->AppendRaw(
             reinterpret_cast<uint8_t*>(&input_data[0]),
-            input_data.size() * sizeof(int32_t)),
+            shape[0] * shape[1] * shape[2] * shape[3] * sizeof(int32_t)),
         "unable to set data for INPUT"
     );
 
@@ -272,6 +272,7 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
                 std::shared_ptr<tc::InferRequestedOutput> output_ptr;
 
                 //FIXME this should probably be a method of the Request class
+                //FIXME apparently input_ptr content is fked up
                 create_model_io(input_ptr, output_ptr, "input_1", "output_0", "FP32", shape);
 
                 // The inference settings.
