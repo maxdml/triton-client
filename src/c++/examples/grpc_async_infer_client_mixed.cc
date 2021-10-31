@@ -52,6 +52,7 @@ float cycles_per_ns;
 // From Adam's base OS
 inline int time_calibrate_tsc(void) {
     struct timespec sleeptime;
+    sleeptime.tv_sec = 0;
     sleeptime.tv_nsec = 5E8; /* 1/2 second */
     struct timespec t_start, t_end;
 
@@ -67,9 +68,8 @@ inline int time_calibrate_tsc(void) {
         ns = ((t_end.tv_sec - t_start.tv_sec) * 1E9);
         ns += (t_end.tv_nsec - t_start.tv_nsec);
 
-        secs = (double)ns / 1000;
-        cycles_per_ns = ((uint64_t)((end - start) / secs)) / 1000.0;
-        printf("time: detected %.03f ticks / us\n", cycles_per_ns);
+        cycles_per_ns = ((end - start) * 1.0) / ns;
+        printf("Time calibration: detected %.03f ticks / ns\n", cycles_per_ns);
 
         return 0;
     }
@@ -87,7 +87,7 @@ class Model {
     public: const std::string name;
     public: Model(std::string &n) : name(n), options(n) {}
 
-    private: int32_t *input_data_;
+    private: std::vector<int32_t> input_data_;
     private: tc::InferInput *input_;
     private: tc::InferRequestedOutput *output_;
 
@@ -98,15 +98,13 @@ class Model {
 
     /* Init the underlying memory */
     size_t n_entries = shape[0] * shape[1] * shape[2] * shape[3];
-    size_t input_size = (n_entries * sizeof(uint32_t));
-    input_data_ = reinterpret_cast<int32_t *>(malloc(input_size));
-    memset(static_cast<void *>(input_data_), '\0', input_size);
+    input_data_.reserve(n_entries);
     for (size_t i = 0; i < n_entries; ++i) {
         input_data_[i] = i;
     }
     FAIL_IF_ERR(tc::InferInput::Create(&input_, input_name, shape, type), "unable to get input");
     FAIL_IF_ERR(
-        input_->AppendRaw(reinterpret_cast<uint8_t*>(input_data_), input_size),
+        input_->AppendRaw(reinterpret_cast<uint8_t*>(&input_data_[0]), n_entries * sizeof(int32_t)),
         "unable to set data for INPUT"
     );
     FAIL_IF_ERR(tc::InferRequestedOutput::Create(&output_, output_name), "unable to get output");
@@ -296,16 +294,19 @@ int receive_callback(tc::InferResult *result) {
             result->Id(&rid);
             //std::cout << "received result for query " << rid << std::endl;
             uint64_t end_time = rdtscp(NULL) - send_times[std::stoi(rid)];
-            latencies[recv_requests++] = end_time;
+            // latencies[recv_requests++] = end_time; seems to not persist values in the vector beyond this scope?
+            latencies.push_back(end_time);
+            recv_requests++;
         }
     } else {
-        // TODO log error
+        std::cout << "Error processing request " << result->RequestStatus() << std::endl;
     }
 
     return 0;
 }
 
 int main(int argc, char** argv) {
+    time_calibrate_tsc();
     bool verbose = false;
     tc::Headers http_headers;
 
@@ -313,7 +314,7 @@ int main(int argc, char** argv) {
     latencies.reserve(1e6);
 
     /* Parse options */
-    int max_concurrency;
+    int max_concurrency = -1;
     std::string label, schedule_file;
     std::string remote_host, remote_port;
     std::string output_filename;
@@ -356,7 +357,7 @@ int main(int argc, char** argv) {
     std::vector<std::chrono::steady_clock::time_point>::iterator send_time_it = sched->send_times.begin();
     std::chrono::steady_clock::time_point next_send_time = (*send_time_it + start_offset);
     sched->end_time = sched->send_times.back() + start_offset;
-    std::chrono::steady_clock::time_point max_end_time = sched->end_time + std::chrono::seconds(2);
+    std::chrono::steady_clock::time_point max_end_time = sched->end_time + std::chrono::seconds(5);
     std::chrono::steady_clock::time_point iter_time = sched->start_time;
     while (recv_requests < sched->n_requests and !terminate) {
         iter_time = std::chrono::steady_clock::now();
@@ -390,12 +391,13 @@ int main(int argc, char** argv) {
     // Process latencies
     int32_t cycles_per_us = cycles_per_ns * 1e3;
     std::sort(latencies.begin(), latencies.end());
-    std::cout << "median: " << latencies[latencies.size() / 2] / cycles_per_us
-              << " 75th: " << latencies[latencies.size() * .75] / cycles_per_us
-              << " 90th: " << latencies[latencies.size() * .90] / cycles_per_us
-              << " 99th: " << latencies[latencies.size() * .99] / cycles_per_us
-              << " 99.9th: " << latencies[latencies.size() * .999] / cycles_per_us
-              //<< " average: " << average
+    std::cout << std::fixed
+              << "median: " << int(latencies[latencies.size() / 2] / cycles_per_us) << " us"
+              << " 75th: " << int(latencies[latencies.size() * .75] / cycles_per_us) << " us"
+              << " 90th: " << int(latencies[latencies.size() * .90] / cycles_per_us) << " us"
+              << " 99th: " << int(latencies[latencies.size() * .99] / cycles_per_us) << " us"
+              << " 99.9th: " << int(latencies[latencies.size() * .999] / cycles_per_us) << " us"
+              << " average: " << int(std::accumulate(latencies.begin(), latencies.end(), 0) / latencies.size()) << " us"
               << std::endl;
      return 0;
 }

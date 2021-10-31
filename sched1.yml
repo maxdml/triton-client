@@ -1,6 +1,6 @@
-rate: 100
+rate: 50
 ratios: [1]
 uniform: false
-duration: 5
+duration: 10
 models: [googlenet]
 versions: [1]
