@@ -86,6 +86,37 @@ class Model {
     public: std::vector<const tc::InferRequestedOutput *> outputs;
     public: const std::string name;
     public: Model(std::string &n) : name(n), options(n) {}
+
+    private: int32_t *input_data_;
+    private: tc::InferInput *input_;
+    private: tc::InferRequestedOutput *output_;
+
+    public: int create_model_io(const char *input_name, const char *output_name,
+                                const char *type, std::vector<int64_t> &shape) {
+
+    assert(shape.size() == 4);
+
+    /* Init the underlying memory */
+    size_t n_entries = shape[0] * shape[1] * shape[2] * shape[3];
+    size_t input_size = (n_entries * sizeof(uint32_t));
+    input_data_ = reinterpret_cast<int32_t *>(malloc(input_size));
+    memset(static_cast<void *>(input_data_), '\0', input_size);
+    for (size_t i = 0; i < n_entries; ++i) {
+        input_data_[i] = i;
+    }
+    FAIL_IF_ERR(tc::InferInput::Create(&input_, input_name, shape, type), "unable to get input");
+    FAIL_IF_ERR(
+        input_->AppendRaw(reinterpret_cast<uint8_t*>(input_data_), input_size),
+        "unable to set data for INPUT"
+    );
+    FAIL_IF_ERR(tc::InferRequestedOutput::Create(&output_, output_name), "unable to get output");
+
+    inputs = {input_};
+    outputs = {output_};
+
+    return 0;
+}
+
 };
 
 class Request {
@@ -206,36 +237,6 @@ static int parse_args(int argc, char **argv, bpo::options_description &opts) {
     return 0;
 }
 
-int create_model_io(std::shared_ptr<tc::InferInput> &input_ptr, std::shared_ptr<tc::InferRequestedOutput> &output_ptr,
-                    const char *input_name, const char *output_name,
-                    const char *type, std::vector<int64_t> &shape) {
-
-    assert(shape.size() == 4);
-    std::vector<std::vector<std::vector<int32_t>>> input_data(shape[1], std::vector<std::vector<int32_t>>(shape[2], std::vector<int32_t>(shape[3])));
-    for (size_t i = 0; i < shape[1]; ++i) {
-        for (size_t j = 0; j < shape[2]; ++j) {
-            for (size_t k = 0; k < shape[3]; ++k) {
-                input_data[i][j][k] = k;
-            }
-        }
-    }
-    tc::InferInput *input;
-    FAIL_IF_ERR(tc::InferInput::Create(&input, input_name, shape, type), "unable to get input");
-    input_ptr.reset(input);
-    FAIL_IF_ERR(
-        input_ptr->AppendRaw(
-            reinterpret_cast<uint8_t*>(&input_data[0]),
-            shape[0] * shape[1] * shape[2] * shape[3] * sizeof(int32_t)),
-        "unable to set data for INPUT"
-    );
-
-    tc::InferRequestedOutput *output;
-    FAIL_IF_ERR(tc::InferRequestedOutput::Create(&output, output_name), "unable to get output");
-    output_ptr.reset(output);
-
-    return 0;
-}
-
 int parse_schedule(std::string &schedule_file, Schedule *sched) {
     if (not sched)
         return EINVAL;
@@ -267,17 +268,7 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
             if (model->name == "googlenet") {
                 //std::vector<std::vector<std::vector<int32_t>>> input0_data(3, std::vector<std::vector<int32_t>>(224, std::vector<int32_t>(224)));
                 std::vector<int64_t> shape{1, 3, 224, 224};
-                // Initialize the inputs with the data.
-                std::shared_ptr<tc::InferInput> input_ptr;
-                std::shared_ptr<tc::InferRequestedOutput> output_ptr;
-
-                //FIXME this should probably be a method of the Request class
-                //FIXME apparently input_ptr content is fked up
-                create_model_io(input_ptr, output_ptr, "input_1", "output_0", "FP32", shape);
-
-                // The inference settings.
-                model->inputs = {input_ptr.get()};
-                model->outputs = {output_ptr.get()};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
             }
             //TODO the rest of the models
             model_list.push_back(model);
