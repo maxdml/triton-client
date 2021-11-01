@@ -264,7 +264,6 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
             model->options.model_version_ = versions[i].as<char>();
             model->options.client_timeout_ = 0; // FIXME unlimited timeout?
             if (model->name == "googlenet") {
-                //std::vector<std::vector<std::vector<int32_t>>> input0_data(3, std::vector<std::vector<int32_t>>(224, std::vector<int32_t>(224)));
                 std::vector<int64_t> shape{1, 3, 224, 224};
                 model->create_model_io("input_1", "output_0", "FP32", shape);
             }
@@ -314,7 +313,7 @@ int main(int argc, char** argv) {
     latencies.reserve(1e6);
 
     /* Parse options */
-    int max_concurrency = -1;
+    int max_concurrency;
     std::string label, schedule_file;
     std::string remote_host, remote_port;
     std::string output_filename;
@@ -324,7 +323,7 @@ int main(int argc, char** argv) {
         ("ip,I", bpo::value<std::string>(&remote_host)->required(), "server IP")
         ("port,P", bpo::value<std::string>(&remote_port)->required(), "server's port")
         ("label,l", bpo::value<std::string>(&label)->default_value("rateclient"), "experiment label")
-        ("max-concurrency,m", bpo::value<int>(&max_concurrency)->default_value(-1), "maximum number of in-flight requests")
+        ("max-concurrency,m", bpo::value<int>(&max_concurrency)->default_value(1e9), "maximum number of in-flight requests")
         ("schedule-file,s", bpo::value<std::string>(&schedule_file)->required(), "path to experiment schedule")
         ("out,o", bpo::value<std::string>(&output_filename), "path to output file (defaults to log directory)")
         ("outdir,o", bpo::value<std::string>(&output_dirname), "name of output dir");
@@ -359,6 +358,7 @@ int main(int argc, char** argv) {
     sched->end_time = sched->send_times.back() + start_offset;
     std::chrono::steady_clock::time_point max_end_time = sched->end_time + std::chrono::seconds(5);
     std::chrono::steady_clock::time_point iter_time = sched->start_time;
+    std::cout << "Starting experiment " << schedule_file << std::endl;
     while (recv_requests < sched->n_requests and !terminate) {
         iter_time = std::chrono::steady_clock::now();
         int32_t inflight = sched->send_index - recv_requests;
@@ -386,6 +386,10 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Sent: " << sched->send_index << ". Received: " << recv_requests << std::endl;
+    if (recv_requests == 0) {
+        std::cerr << "Received 0 requests?" << std::endl;
+        exit(1);
+    }
     sched->recv_requests = recv_requests;
 
     // Process latencies
