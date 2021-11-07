@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 #include "grpc_client.h"
 #include <random>
@@ -49,6 +50,7 @@ uint64_t ns_diff(const std::chrono::steady_clock::time_point &start,
 }
 
 float cycles_per_ns;
+uint32_t cycles_per_us;
 // From Adam's base OS
 inline int time_calibrate_tsc(void) {
     struct timespec sleeptime;
@@ -70,12 +72,18 @@ inline int time_calibrate_tsc(void) {
 
         cycles_per_ns = ((end - start) * 1.0) / ns;
         printf("Time calibration: detected %.03f ticks / ns\n", cycles_per_ns);
+        cycles_per_us = cycles_per_ns * 1e3;
 
         return 0;
     }
 
     return -1;
 }
+
+typedef struct Histogram_t {
+    uint64_t min, max, total, count;
+    std::map<uint32_t, uint64_t> buckets;
+} Histogram_t;
 
 /** WORKLOAD GENERATION STUFF */
 /******************************/
@@ -208,6 +216,12 @@ class Schedule {
         return 0;
     }
 };
+Schedule *sched;
+
+int log_latency(Histogram_t &hist,
+                std::ostream &output, std::ostream &hist_output,
+                std::vector<Request *> requests, bool prune);
+
 
 /** CONFIG STUFF */
 /*****************/
@@ -280,21 +294,21 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
     return 0;
 }
 
-std::vector<double> latencies;
-std::vector<uint64_t> send_times;
+//std::vector<double> latencies;
+//std::vector<uint64_t> send_times;
 uint32_t recv_requests = 0;
 std::mutex cbtex;
 int receive_callback(tc::InferResult *result) {
     if (result->RequestStatus().IsOk()) {
+        std::string rid;
+        result->Id(&rid);
+        std::lock_guard<std::mutex> lock(cbtex);
+        auto req = sched->requests[std::stoi(rid)];
+        req->receive_time = rdtscp(NULL);
         {
-            // lock latency vector
-            std::lock_guard<std::mutex> lock(cbtex);
-            std::string rid;
-            result->Id(&rid);
             //std::cout << "received result for query " << rid << std::endl;
-            uint64_t end_time = rdtscp(NULL) - send_times[std::stoi(rid)];
-            // latencies[recv_requests++] = end_time; seems to not persist values in the vector beyond this scope?
-            latencies.push_back(end_time);
+            //uint64_t end_time = rdtscp(NULL) - send_times[std::stoi(rid)];
+            //latencies.push_back(end_time);
             recv_requests++;
         }
     } else {
@@ -309,15 +323,15 @@ int main(int argc, char** argv) {
     bool verbose = false;
     tc::Headers http_headers;
 
+    /*
     send_times.reserve(1e6);
     latencies.reserve(1e6);
-
+    */
     /* Parse options */
     int max_concurrency;
     std::string label, schedule_file;
     std::string remote_host, remote_port;
     std::string output_filename;
-    std::string output_dirname;
     bpo::options_description desc{"Rate loop client options"};
     desc.add_options()
         ("ip,I", bpo::value<std::string>(&remote_host)->required(), "server IP")
@@ -325,8 +339,7 @@ int main(int argc, char** argv) {
         ("label,l", bpo::value<std::string>(&label)->default_value("rateclient"), "experiment label")
         ("max-concurrency,m", bpo::value<int>(&max_concurrency)->default_value(1e9), "maximum number of in-flight requests")
         ("schedule-file,s", bpo::value<std::string>(&schedule_file)->required(), "path to experiment schedule")
-        ("out,o", bpo::value<std::string>(&output_filename), "path to output file (defaults to log directory)")
-        ("outdir,o", bpo::value<std::string>(&output_dirname), "name of output dir");
+        ("out,o", bpo::value<std::string>(&output_filename), "path to output file (defaults to log directory)");
 
     if (parse_args(argc, argv, desc)) {
         std::cerr << "Error parsing arguments" << std::endl;
@@ -338,7 +351,7 @@ int main(int argc, char** argv) {
     url.append(remote_port);
 
     // Parse schedule
-    Schedule *sched = new Schedule();
+    sched = new Schedule();
     parse_schedule(schedule_file, sched);
 
     std::unique_ptr<tc::InferenceServerGrpcClient> client;
@@ -372,16 +385,18 @@ int main(int argc, char** argv) {
             );
             {
                 std::lock_guard<std::mutex> lock(cbtex);
-                send_times[sched->send_index++] = rdtscp(NULL);
+                //send_times[sched->send_index++] = rdtscp(NULL);
+                sched->send_index++;
+                req->send_time = rdtscp(NULL);
             }
             next_send_time = (*send_time_it + start_offset);
             send_time_it++;
         }
-        // Check whether we need to exit the sending loop
+        // Check whether we need to exit the send_time loop
         if (next_send_time >= sched->end_time or iter_time > sched->end_time) {
             while (std::chrono::steady_clock::now() - sched->start_time > max_end_time.time_since_epoch()); // run grace period
             terminate = true;
-            //std::cout << "Sending complete or iter_time > end_time" << std::endl;
+            //std::cout << "send_time complete or iter_time > end_time" << std::endl;
         }
     }
 
@@ -393,6 +408,11 @@ int main(int argc, char** argv) {
     sched->recv_requests = recv_requests;
 
     // Process latencies
+    Histogram_t hist;
+    std::ofstream lat_file(output_filename);
+    std::ofstream hist_file(output_filename + "_hist");
+    log_latency(hist, lat_file, hist_file, sched->requests, false);
+    /*
     int32_t cycles_per_us = cycles_per_ns * 1e3;
     std::sort(latencies.begin(), latencies.end());
     std::cout << std::fixed
@@ -403,5 +423,189 @@ int main(int argc, char** argv) {
               << " 99.9th: " << int(latencies[latencies.size() * .999] / cycles_per_us) << " us"
               << " average: " << int(std::accumulate(latencies.begin(), latencies.end(), 0) / latencies.size()) << " us"
               << std::endl;
+    */
      return 0;
+}
+
+/** RESULTS STUFF */
+/******************/
+int check_hist(Histogram_t &hist, std::vector<Request *> &reqs, uint64_t nr) {
+    std::cout << "======================================" << std::endl;
+    std::cout << "Hist min: " << hist.min
+              << ". Min: " << (reqs[0]->receive_time - reqs[0]->send_time) / cycles_per_us << std::endl;
+    uint32_t c = 0;
+    for (auto bucket: hist.buckets) {
+        uint64_t i = bucket.first;
+        if (c + bucket.second >= hist.count * .25 and c < hist.count * .25) {
+            std::cout << std::fixed << "Hist 25th: " <<  (i + (i+1)) / 2.0
+                      << ". 25th: "
+                      << (reqs[nr*25/100]->receive_time - reqs[nr*25/100]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        if (c + bucket.second >= hist.count * .5 and c < hist.count * .5) {
+            std::cout << std::fixed << "Hist 50th: " <<  (i + (i+1)) / 2.0
+                      << ". 50th: "
+                      << (reqs[nr/2]->receive_time - reqs[nr/2]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        if (c + bucket.second >= hist.count * .75 and c < hist.count * .75) {
+            std::cout << std::fixed << "Hist 75th: " <<  (i + (i+1)) / 2.0
+            //std::cout << "Hist 75th: " << ((1UL << i) + (1UL << (i-1))) / 2.0
+                      << ". 75th: "
+                      << (reqs[nr*75/100]->receive_time - reqs[nr*75/100]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        if (c + bucket.second >= hist.count * .9 and c < hist.count * .9) {
+            std::cout << std::fixed << "Hist 90th: " <<  (i + (i+1)) / 2.0
+                      << ". 90th: "
+                      << (reqs[nr*90/100]->receive_time - reqs[nr*90/100]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        if (c + bucket.second >= hist.count * .99 and c < hist.count * .99) {
+            std::cout << std::fixed << "Hist 99th: " <<  (i + (i+1)) / 2.0
+                      << ". 99th: "
+                      << (reqs[nr*99/100]->receive_time - reqs[nr*99/100]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        if (c + bucket.second >= hist.count * .999 and c < hist.count * .999) {
+            std::cout << std::fixed << "Hist 99.9th: " <<  (i + (i+1)) / 2.0
+                      << ". 99.9th: "
+                      << (reqs[nr*999/1000]->receive_time - reqs[nr*999/1000]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        if (c + bucket.second >= hist.count * .9999 and c < hist.count * .9999) {
+            std::cout << std::fixed << "Hist 99.99th: " <<  (i + (i+1)) / 2.0
+                      << ". 99.99th: "
+                      << (reqs[nr*9999/10000]->receive_time - reqs[nr*9999/10000]->send_time) / (cycles_per_us)
+                      << std::endl;
+        }
+        c += bucket.second;
+    }
+    assert(c == hist.count);
+
+    std::cout << "Hist max: " << hist.max
+              << ". Max: " << (reqs[nr]->receive_time - reqs[nr]->send_time) / (cycles_per_us) << std::endl;
+    std::cout << "Hist count: " << c << ". Num requests: " << nr+1 << std::endl;
+    std::cout << "======================================" << std::endl;
+    return 0;
+}
+#define BUCKET_SIZE 1 // in us
+
+static inline void insert_value(Histogram_t *hist, uint64_t val) {
+    if (val > hist->max) {
+        hist->max = val;
+    }
+    if (val < hist->min or hist->min == 0) {
+        hist->min = val;
+    }
+    hist->total += val;
+
+    int bucket = 0;
+    bucket = val / BUCKET_SIZE;
+    hist->buckets[bucket]++;
+    hist->count++;
+};
+
+static uint64_t req_latency(const Request &req) {
+    if (req.receive_time == 0) {
+        return LLONG_MAX;
+    } else {
+        return (req.receive_time - req.send_time) / cycles_per_us;
+    }
+}
+
+int log_latency(Histogram_t &hist,
+                std::ostream &output, std::ostream &hist_output,
+                std::vector<Request *> requests, bool prune=false) {
+    if (requests.size() == 0) {
+        return ENOENT;
+    }
+    float prune_factor = 0.0;
+    if (prune) {
+        prune_factor = 0.1;
+    }
+    std::cout << "Initial sample size: " << requests.size() << std::endl;
+    std::vector<Request *> pruned_requests(requests.begin() + requests.size() * prune_factor, requests.end());
+
+    // Sort all requests by response time
+    auto lat_cmp = [](Request *a, Request *b) { return req_latency(*a) < req_latency(*b); };
+    std::sort(pruned_requests.begin(), pruned_requests.end(), lat_cmp);
+
+    // Histograms
+    std::cout << "Processing " << pruned_requests.size() << " samples" << std::endl;
+    hist.buckets.clear();
+    hist.min = 0; hist.max = 0; hist.count = 0; hist.total = 0;
+    for (uint64_t i = 0; i < pruned_requests.size(); ++i) {
+        if (pruned_requests[i]->receive_time == 0)
+            continue;
+        // Store values in microseconds
+        insert_value(&hist, (pruned_requests[i]->receive_time - pruned_requests[i]->send_time) / cycles_per_us);
+    }
+    if (hist.count == 0) {
+        std::cout << "no values inserted in histogram" << std::endl;
+        return -1;
+    }
+    std::cout << "Valid sample size: " << hist.count << std::endl;
+    // First line is histo for all samples
+    hist_output << "MODEL\tMIN\tMAX\tCOUNT\tTOTAL";
+    for (auto bucket: hist.buckets) {
+        hist_output << "\t" << bucket.first;
+    }
+    hist_output << std::endl;
+    hist_output << "ALL\t"
+                << hist.min << "\t"
+                << hist.max << "\t"
+                << hist.count << "\t"
+                << hist.total;
+    for (auto bucket: hist.buckets) {
+        hist_output << "\t" << bucket.second;
+    }
+    hist_output << std::endl;
+    check_hist(hist, pruned_requests, hist.count - 1);
+    // Then one line per request type
+    std::unordered_map<Model *, std::vector<Request *>> requests_by_type{};
+    for (uint64_t i = 0; i < pruned_requests.size(); ++i) {
+        if (pruned_requests[i]->receive_time == 0)
+            continue;
+
+        auto &req_ptr = pruned_requests[i];
+        if (requests_by_type.find(req_ptr->model) == requests_by_type.end())
+            requests_by_type[req_ptr->model] = std::vector<Request *>{};
+
+        requests_by_type[req_ptr->model].push_back(req_ptr);
+    }
+    for (auto &rtype: requests_by_type) {
+        hist.buckets.clear();
+        hist.min = 0; hist.max = 0; hist.count = 0; hist.total = 0;
+        auto reqs = rtype.second;
+        for (uint64_t i = 0; i < reqs.size(); ++i) {
+            // Store values in nanoseconds
+            insert_value(&hist, (reqs[i]->receive_time - reqs[i]->send_time) / cycles_per_us);
+        }
+        if (hist.count == 0) {
+            std::cout
+                << "No values inserted in histogram for model "
+                << rtype.first->name
+                << std::endl;
+            continue;
+        }
+        hist_output << "MODEL\tMIN\tMAX\tCOUNT\tTOTAL";
+        for (auto bucket: hist.buckets) {
+            hist_output << "\t" << bucket.first;
+        }
+        hist_output << std::endl;
+        hist_output << rtype.first->name << "\t"
+                    << hist.min << "\t"
+                    << hist.max << "\t"
+                    << hist.count << "\t"
+                    << hist.total;
+        for (auto bucket: hist.buckets) {
+            hist_output << "\t" << bucket.second;
+        }
+        hist_output << std::endl;
+        assert(hist.count == reqs.size());
+
+        check_hist(hist, reqs, reqs.size() - 1);
+    }
+    return 0;
 }
