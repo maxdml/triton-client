@@ -280,8 +280,29 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
             if (model->name == "googlenet") {
                 std::vector<int64_t> shape{1, 3, 224, 224};
                 model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "mnist-8") {
+                std::vector<int64_t> shape{1, 1rror: ‘const class inference::InferTensorContents’ has no member named ‘byte_contents’; did you mean ‘bytes_contents, 28, 28};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "arcfaceresnet100-8") {
+                std::vector<int64_t> shape{1, 3, 112, 112};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "densenet121") {
+                std::vector<int64_t> shape{1, 3, 224, 224};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "inception_v3") {
+                std::vector<int64_t> shape{1, 3, 224, 224};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "mobilenet_v2") {
+                std::vector<int64_t> shape{1, 3, 224, 224};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "resnet50") {
+                std::vector<int64_t> shape{1, 3, 224, 224};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
+            } else if (model->name == "ultraface320") {
+                std::vector<int64_t> shape{1, 3, 240, 320};
+                model->create_model_io("input_1", "output_0", "FP32", shape);
             }
-            //TODO the rest of the models
+
             model_list.push_back(model);
         }
 
