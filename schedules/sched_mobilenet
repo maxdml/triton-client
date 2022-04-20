@@ -1,0 +1,5 @@
+ratios: [1.0]
+uniform: false
+duration: 5
+models: [mobilenet_v2]
+versions: [1]

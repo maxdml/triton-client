@@ -1,0 +1,5 @@
+ratios: [.7, .3]
+uniform: false
+duration: 60
+models: [mnist-8, inception_v3]
+versions: [1, 1]

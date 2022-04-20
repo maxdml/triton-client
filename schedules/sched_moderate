@@ -1,0 +1,5 @@
+ratios: [.7, .3]
+uniform: false
+duration: 60
+models: [ultraface320, arcfaceresnet100-8]
+versions: [1, 1]
