@@ -167,7 +167,7 @@ class Schedule {
     }
 
     public: int gen_schedule(std::mt19937 &seed, std::vector<Model *> model_list) {
-        double m = std::log((1e9/rate) - std::sqrt(sigma) / 2);
+        double m = std::log(1e9/rate) - ((sigma * sigma) / 2);
         std::lognormal_distribution<double> ln_dist(m, sigma);
         std::uniform_real_distribution<double> uniform_dist(0.0, 1.0);
         std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
@@ -195,7 +195,6 @@ class Schedule {
                 time += interval_ns;
             } else {
                 uint64_t next_ns = ln_dist(seed);
-                std::cout << next_ns << std::endl;
                 time += next_ns;
             }
             std::chrono::nanoseconds send_time(time);
@@ -208,6 +207,7 @@ class Schedule {
             cr->model = model_list[cmd_idx];
         }
         std::cout << "Created " << n_requests << " requests spanning " << time/1e9 << " s" << std::endl;
+        std::cout << "Average interval: " << time / 3000.0 << " ns" << std::endl;
         /*
         for (int i = 0; i < models.size(); ++i) {
             if (type_counts[i] > 0) {
@@ -260,7 +260,6 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
     try {
         YAML::Node config = YAML::LoadFile(schedule_file);
         YAML::Node rate = config["rate"];
-        YAML::Node duration = config["duration"];
         YAML::Node uniform = config["uniform"];
         YAML::Node ratios = config["ratios"];
         YAML::Node models = config["models"];
