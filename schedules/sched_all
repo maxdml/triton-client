@@ -1,0 +1,6 @@
+rate: 5
+ratios: [.125, .125, .125, .125, .125, .125, .125, .125]
+uniform: false
+duration: 5
+models: [arcfaceresnet100-8, densenet121, googlenet, inception_v3, mnist-8, mobilenet_v2, resnet50, ultraface320]
+versions: [1, 1, 1, 1, 1, 1, 1, 1]
