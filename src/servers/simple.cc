@@ -95,43 +95,52 @@ inline int time_calibrate_tsc(void) {
     return -1;
 }
 
+/**** WORKLOAD & CLIENT ***/
+class Model {
+    public:
+        std::string name;
+        std::vector<int64_t> input_shape;
+        std::vector<char> inputs;
+        float ratio;
+
+        Model(std::string name, std::vector<int64_t> input_shape, float ratio) :
+            name(name), input_shape(input_shape), ratio(ratio) {}
+}
+
 class Request {
-    public: int model_id;
+    public: Model *model;
     public: uint64_t send_time;
     public: uint64_t receive_time;
     public: uint64_t latency;
     public: uint32_t id;
 };
 
-/**** ALLIS STUFF ***/
-const std::vector<std::string> model_names{
-    "densenet-9", "googlenet-9", "inceptionv3",
-    "mobilenetv2-7", "resnet18-v2-7", "resnet34-v2-7",
-    "resnet50-v2-7", "squeezenet1.1-7", "mnist-8.1-7"
-};
-
-const std::vector<float> model_ratios{
-    .111,.111,.111,.111,.111,.111,.111,.111,.111
-};
-
 #define TOTAL_REQUESTS 3000
 
-std::map<std::string, std::vector<<char>> model_inputs_0;
-std::map<std::string, std::vector<<char>> model_inputs_shape;
+std::vector<float> model_ratios{
+    .111, .111, .111, .111, .111, .111, .111, .111, .111
+};
 
-void setupInputs(std::string model_name, int sizeInBytes) {
-  std::vector<int64_t> input_shape;
-  if (model_name == "mnist-8") {
-    input_shape = std::vector<int64_t>{1, 3, 28, 28};
-  } else {
-    input_shape = std::vector<int64_t>{1, 3, 224, 224};
-  }
-  model_inputs_shape[model_name] = input_shape;
+std::vector<Model> models{
+    Model("densenet-9", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("googlenet-9", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("inceptionv3", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("mobilenetv2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("resnet18-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("resnet34-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("resnet50-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("squeezenet1.1-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("mnist-8", std::vector<int64_t> {1, 3, 224, 224}, .111)
+};
 
-  size_t num_elements = shape[0] * shape[1] * shape[2] * shape[3];
-  model_inputs0[model_name]->reserve(num_elements);
-  for (size_t i = 0; i < num_elements; ++i) {
-    ((int*)model_inputs_0[model_name]->data())[i] = i;
+void setupModels() {
+  for (auto &model: models) {
+      size_t num_elements =
+          model.input_shape[0] * model.input_shape[1] * model.input_shape[2] * model.input_shape[3];
+      model.inputs->reserve(num_elements);
+      for (size_t i = 0; i < num_elements; ++i) {
+        ((int*)model.input->data())[i] = i;
+      }
   }
 }
 
@@ -139,18 +148,7 @@ ipc::ShmChannelCpuWriter write_channel;
 ipc::ShmChannelCpuReader read_channel;
 
 void client_setup() {
-  // setup inputs
-  std::vector<int64_t> input1_shape({1, 16});
-  setupInputs("densenet-9", 16)
-  setupInputs("googlenet-9", 16)
-  setupInputs("inceptionv3", 16)
-  setupInputs("mobilenetv2-7", 16)
-  setupInputs("resnet18-v2-7", 16)
-  setupInputs("resnet34-v2-7", 16)
-  setupInputs("resnet50-v2-7", 16)
-  setupInputs("squeezenet1.1-7", 16)
-  setupInputs("mnist-8.1-7", 3136)
-
+    setup_models();
   // TODO setup memory channels
 
 }
@@ -166,7 +164,7 @@ void client(float sigma, float rate) {
         // Pick a model
         double r = uniform_dist(seed);
         int cmd_idx = -1;
-        for (size_t i = 0; i < model_ratios.size(); ++i) {
+        for (size_t i = 0; i < models.size(); ++i) {
             if (r < model_ratios[i]) {
                 cmd_idx = i;
                 break;
@@ -189,11 +187,9 @@ void client(float sigma, float rate) {
 
 /********************/
 
-
 // bool enforce_memory_type = false;
 bool enforce_memory_type = true;
 TRITONSERVER_MemoryType requested_memory_type = TRITONSERVER_MEMORY_GPU;
-std::string model_repository_path = // TODO;
 
 #ifdef TRITON_ENABLE_GPU
 static auto cuda_data_deleter = [](void* data) {
@@ -438,9 +434,16 @@ ParseModelMetadata(
 
 int main(int argc, char** argv) {
 
-  std::string model_repository_path;
+  std::string model_repository_path = "/models";
   int verbose_level = 0;
   requested_memory_type = TRITONSERVER_MEMORY_GPU;
+
+  float rate = atof(argv[0]);
+  float sigma = atof(argv[1]);
+  const char experiment_name = argv[2];
+
+  // setup client
+  client_setup();
 
   // Create the server...
   TRITONSERVER_ServerOptions* server_options = nullptr;
@@ -527,13 +530,13 @@ int main(int argc, char** argv) {
   bool is_ready = false;
   health_iters = 0;
   while (!is_ready) {
-    for (auto model_name: model_names) {
+    for (auto model: models) {
         FAIL(
             TRITONSERVER_ServerModelIsReady(
-                server.get(), model_name.c_str(), 1, &is_ready),
+                server.get(), model.name.c_str(), 1, &is_ready),
             "unable to get model readiness");
         if (!is_ready) {
-          if (++health_iters >= 10 * model_names.size()) {
+          if (++health_iters >= 10 * models.size()) {
             FAIL("model failed to be ready in 10 iterations");
           }
           std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -543,7 +546,7 @@ int main(int argc, char** argv) {
         TRITONSERVER_Message* model_metadata_message;
         FAIL_IF_ERR(
             TRITONSERVER_ServerModelMetadata(
-                server.get(), model_name.c_str(), 1, &model_metadata_message),
+                server.get(), model.name.c_str(), 1, &model_metadata_message),
             "unable to get model metadata message");
         const char* buffer;
         size_t byte_size;
@@ -565,7 +568,7 @@ int main(int argc, char** argv) {
             TRITONSERVER_MessageDelete(model_metadata_message),
             "deleting status protobuf");
 
-        if (strcmp(model_metadata["name"].GetString(), model_name.c_str())) {
+        if (strcmp(model_metadata["name"].GetString(), model.name.c_str())) {
           FAIL("unable to find metadata for model");
         }
 
@@ -598,37 +601,32 @@ int main(int argc, char** argv) {
       "creating response allocator");
 
 
-  // setup client
-  setup_client();
-  float sigma = atof(argv[0]);
-  float rate = atof(argv[1]);
-  // TODO run in a separate thread
-  client(sigma, rate);
+  std::thread(&client, sigma, rate);
 
-  const TRITONSERVER_DataType datatype = (is_int) ? TRITONSERVER_TYPE_INT32 : TRITONSERVER_TYPE_FP32;
-  auto input0 = is_torch_model ? "INPUT__0" : "INPUT0";
-  auto output0 = is_torch_model ? "OUTPUT__0" : "OUTPUT0";
+  const TRITONSERVER_DataType datatype = TRITONSERVER_TYPE_FP32;
+  auto input0 = "INPUT0";
+  auto output0 = "OUTPUT0";
   int nrequests = 0;
   std::vector<*Request> requests;
   requests.reserve(TOTAL_REQUESTS);
   TRITONSERVER_InferenceRequest* irequest = nullptr;
   while (nrequests < TOTAL_REQUESTS) {
-      // attempt to dequeue a "request" (model to process)
-      int n = ;
-      std::string *model_name = &model_names[n];
+      // TODO attempt to dequeue a "request" (model to process) from channel
+      int n = 1;
+      Model model = models[n];
 
       Request req = new Request();
-      req->model_id = n;
+      req->model = &model;
       req->id = nrequests;
       req->send_time = rdtscp(NULL);;
 
       // Inference
       FAIL_IF_ERR(
           TRITONSERVER_InferenceRequestNew(
-              &irequest, server.get(), model_name.c_str(), -1 /* model_version */),
+              &irequest, server.get(), model.name.c_str(), -1 /* model_version */),
           "creating inference request");
       FAIL_IF_ERR(
-          TRITONSERVER_InferenceRequestSetId(irequest, itoa(n)),
+          TRITONSERVER_InferenceRequestSetId(irequest, itoa(n)), // XXX does that need to be model ID or req ID?
           "setting ID for the request");
       FAIL_IF_ERR(
           TRITONSERVER_InferenceRequestSetReleaseCallback(
@@ -638,25 +636,23 @@ int main(int argc, char** argv) {
       // Inputs
       FAIL_IF_ERR(
           TRITONSERVER_InferenceRequestAddInput(
-              irequest, input0, datatype, &model_inputs_shape[model_name][0], model_inputs_shape[model_name].size()),
+              irequest, input0, datatype, &model.input_shape[0], model.input_shape.size()),
           "setting input 0 meta-data for the request");
       FAIL_IF_ERR(
           TRITONSERVER_InferenceRequestAddRequestedOutput(irequest, output0),
           "requesting output 0 for the request");
 
-      size_t input0_size = model_inputs_0[model_name].size();
+      size_t input0_size = model.inputs.size();
 
       // Copy request inputs to GPU
       std::unique_ptr<void, decltype(cuda_data_deleter)> input0_gpu(nullptr, cuda_data_deleter);
-      std::unique_ptr<void, decltype(cuda_data_deleter)> input1_gpu(nullptr, cuda_data_deleter);
       FAIL_IF_CUDA_ERR(cudaSetDevice(0), "setting CUDA device to device 0");
-        void* dst;
-        FAIL_IF_CUDA_ERR(cudaMalloc(&dst, input0_size), "allocating GPU memory for INPUT0 data");
-        input0_gpu.reset(dst);
-        FAIL_IF_CUDA_ERR(
-            cudaMemcpy(dst, &model_inputs_0[model_name][0], input0_size, cudaMemcpyHostToDevice),
-            "setting INPUT0 data in GPU memory");
-
+      void* dst;
+      FAIL_IF_CUDA_ERR(cudaMalloc(&dst, input0_size), "allocating GPU memory for INPUT0 data");
+      input0_gpu.reset(dst);
+      FAIL_IF_CUDA_ERR(
+        cudaMemcpy(dst, &model_inputs_0[model_name][0], input0_size, cudaMemcpyHostToDevice),
+        "setting INPUT0 data in GPU memory");
       const void* input0_base = input0_gpu.get()
 
       FAIL_IF_ERR(
@@ -669,9 +665,6 @@ int main(int argc, char** argv) {
       {
         auto p = new std::promise<TRITONSERVER_InferenceResponse*>();
         std::future<TRITONSERVER_InferenceResponse*> completed = p->get_future();
-        req->receive_time = rdtscp(NULL);
-        req->latency = req->receive_time - req->send_time;
-        requests.push_back(&req);
 
         FAIL_IF_ERR(
             TRITONSERVER_InferenceRequestSetResponseCallback(
@@ -686,6 +679,10 @@ int main(int argc, char** argv) {
 
         // Wait for the inference to complete.
         TRITONSERVER_InferenceResponse* completed_response = completed.get();
+
+        req->receive_time = rdtscp(NULL);
+        req->latency = req->receive_time - req->send_time;
+        requests.push_back(&req);
 
         FAIL_IF_ERR(
             TRITONSERVER_InferenceResponseError(completed_response),
@@ -710,12 +707,13 @@ int main(int argc, char** argv) {
       TRITONSERVER_ResponseAllocatorDelete(allocator),
       "deleting response allocator");
 
+    std::string output_filename = experiment_label + "-results.csv";
     std::ofstream output(output_filename);
-    output << "REQ_ID\tMODEL_ID\tSENT\tRECEIVED\tLATENCY\t" << std::endl;
+    output << "REQ_ID\tMODEL\tSENT\tRECEIVED\tLATENCY\t" << std::endl;
     for (auto req: requests) {
         output <<
             req->id << "\t"
-            req->model_id << "\t"
+            req->model.name << "\t"
             req->send_time / cycles_per_ns << "\t"
             req->receive_time / cycles_per_ns << "\t"
             req->latency / cycles_per_ns << std::endl;
