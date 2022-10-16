@@ -144,15 +144,17 @@ void setupModels() {
   }
 }
 
-ipc::ShmChannelCpuWriter write_channel;
-ipc::ShmChannelCpuReader read_channel;
+ipc::ShmChannelCpuWriter submit_channel;
+ipc::ShmChannelCpuReader results_channel;
 
 void client_setup() {
     setup_models();
-  // TODO setup memory channels
-
+    submit_channel.connect("triton-client-submit-chan", 65536);
+    results_channel.connect("triton-client-results-chan", 65536);
 }
 
+
+const max_inflight = 256;
 void client(float sigma, float rate) {
     std::random_device rd;
     std::mt19937 seed(rd());
@@ -160,6 +162,7 @@ void client(float sigma, float rate) {
     std::lognormal_distribution<double> lognormal_dist(std::log(1000000000.0 / rate) - (sigma * sigma/2), sigma);
     // Start a sending loop
     int nsent = 0;
+    const int *msg_buffer[max_inflight];
     while (nsent < TOTAL_REQUESTS) {
         // Pick a model
         double r = uniform_dist(seed);
@@ -180,7 +183,8 @@ void client(float sigma, float rate) {
         auto send_time = std::chrono::steady_clock::now() + std::chrono::nanoseconds(next_ns);
         while (std::chrono::steady_clock::now() < send_time) {}
 
-        // TODO send to memory channel
+        msg_buffer[nrequests % max_inflight] = cmd_idx;
+        submit_channel.write(&msg_buffer[nrequests % max_inflight]);
     }
 }
 
