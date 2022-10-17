@@ -36,6 +36,8 @@
 #include <unordered_map>
 #include <vector>
 #include <map>
+#include <random>
+#include <fstream>
 #include "src/servers/common.h"
 #include "triton/core/tritonserver.h"
 
@@ -76,7 +78,6 @@ inline int time_calibrate_tsc(void) {
     cpu_serialize();
     if (clock_gettime(CLOCK_MONOTONIC_RAW, &t_start) == 0) {
         uint64_t ns, end, start;
-        double secs;
 
         start = rdtscp(NULL);
         nanosleep(&sleeptime, NULL);
@@ -105,7 +106,7 @@ class Model {
 
         Model(std::string name, std::vector<int64_t> input_shape, float ratio) :
             name(name), input_shape(input_shape), ratio(ratio) {}
-}
+};
 
 class Request {
     public: Model *model;
@@ -113,6 +114,7 @@ class Request {
     public: uint64_t receive_time;
     public: uint64_t latency;
     public: uint32_t id;
+    public: Request(){};
 };
 
 #define TOTAL_REQUESTS 3000
@@ -122,24 +124,24 @@ std::vector<float> model_ratios{
 };
 
 std::vector<Model> models{
-    Model("densenet-9", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("googlenet-9", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("inceptionv3", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("mobilenetv2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("resnet18-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("resnet34-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("resnet50-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("squeezenet1.1-7", std::vector<int64_t> {1, 3, 224, 224}, .111)
-    Model("mnist-8", std::vector<int64_t> {1, 3, 224, 224}, .111)
+    Model("densenet-9", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("googlenet-9", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("inceptionv3", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("mobilenetv2-7", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("resnet18-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("resnet34-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("resnet50-v2-7", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("squeezenet1.1-7", std::vector<int64_t> {1, 3, 224, 224}, .111),
+    Model("mnist-8", std::vector<int64_t> {1, 3, 224, 224}, .111),
 };
 
-void setupModels() {
+void setup_models() {
   for (auto &model: models) {
       size_t num_elements =
           model.input_shape[0] * model.input_shape[1] * model.input_shape[2] * model.input_shape[3];
-      model.inputs->reserve(num_elements);
+      model.inputs.reserve(num_elements);
       for (size_t i = 0; i < num_elements; ++i) {
-        ((int*)model.input->data())[i] = i;
+        ((int*)model.inputs.data())[i] = i;
       }
   }
 }
@@ -154,7 +156,7 @@ void client_setup() {
 }
 
 
-const max_inflight = 256;
+const uint32_t max_inflight = 256;
 void client(float sigma, float rate) {
     std::random_device rd;
     std::mt19937 seed(rd());
@@ -162,7 +164,7 @@ void client(float sigma, float rate) {
     std::lognormal_distribution<double> lognormal_dist(std::log(1000000000.0 / rate) - (sigma * sigma/2), sigma);
     // Start a sending loop
     int nsent = 0;
-    const int *msg_buffer[max_inflight];
+    int msg_buffer[max_inflight];
     while (nsent < TOTAL_REQUESTS) {
         // Pick a model
         double r = uniform_dist(seed);
@@ -183,8 +185,8 @@ void client(float sigma, float rate) {
         auto send_time = std::chrono::steady_clock::now() + std::chrono::nanoseconds(next_ns);
         while (std::chrono::steady_clock::now() < send_time) {}
 
-        msg_buffer[nrequests % max_inflight] = cmd_idx;
-        submit_channel.write(&msg_buffer[nrequests % max_inflight]);
+        msg_buffer[nsent % max_inflight] = cmd_idx;
+        submit_channel.write(&msg_buffer[nsent % max_inflight]);
     }
 }
 
@@ -444,7 +446,7 @@ int main(int argc, char** argv) {
 
   float rate = atof(argv[0]);
   float sigma = atof(argv[1]);
-  const char experiment_name = argv[2];
+  const char experiment_label = *argv[2];
 
   // setup client
   client_setup();
@@ -535,10 +537,10 @@ int main(int argc, char** argv) {
   health_iters = 0;
   while (!is_ready) {
     for (auto model: models) {
-        FAIL(
-            TRITONSERVER_ServerModelIsReady(
-                server.get(), model.name.c_str(), 1, &is_ready),
-            "unable to get model readiness");
+        FAIL_IF_ERR(
+            TRITONSERVER_ServerModelIsReady(server.get(), model.name.c_str(), 1, &is_ready),
+            "unable to get model readiness"
+        );
         if (!is_ready) {
           if (++health_iters >= 10 * models.size()) {
             FAIL("model failed to be ready in 10 iterations");
@@ -611,15 +613,15 @@ int main(int argc, char** argv) {
   auto input0 = "INPUT0";
   auto output0 = "OUTPUT0";
   int nrequests = 0;
-  std::vector<*Request> requests;
-  requests.reserve(TOTAL_REQUESTS);
+  std::vector<Request *> reqs;
+  reqs.reserve(TOTAL_REQUESTS);
   TRITONSERVER_InferenceRequest* irequest = nullptr;
   while (nrequests < TOTAL_REQUESTS) {
       // TODO attempt to dequeue a "request" (model to process) from channel
       int n = 1;
       Model model = models[n];
 
-      Request req = new Request();
+      Request *req = new Request();
       req->model = &model;
       req->id = nrequests;
       req->send_time = rdtscp(NULL);;
@@ -630,7 +632,7 @@ int main(int argc, char** argv) {
               &irequest, server.get(), model.name.c_str(), -1 /* model_version */),
           "creating inference request");
       FAIL_IF_ERR(
-          TRITONSERVER_InferenceRequestSetId(irequest, itoa(n)), // XXX does that need to be model ID or req ID?
+          TRITONSERVER_InferenceRequestSetId(irequest, std::to_string(nrequests).c_str()),
           "setting ID for the request");
       FAIL_IF_ERR(
           TRITONSERVER_InferenceRequestSetReleaseCallback(
@@ -655,9 +657,9 @@ int main(int argc, char** argv) {
       FAIL_IF_CUDA_ERR(cudaMalloc(&dst, input0_size), "allocating GPU memory for INPUT0 data");
       input0_gpu.reset(dst);
       FAIL_IF_CUDA_ERR(
-        cudaMemcpy(dst, &model_inputs_0[model_name][0], input0_size, cudaMemcpyHostToDevice),
+        cudaMemcpy(dst, &model.inputs[0], input0_size, cudaMemcpyHostToDevice),
         "setting INPUT0 data in GPU memory");
-      const void* input0_base = input0_gpu.get()
+      const void* input0_base = input0_gpu.get();
 
       FAIL_IF_ERR(
           TRITONSERVER_InferenceRequestAppendInputData(
@@ -686,7 +688,7 @@ int main(int argc, char** argv) {
 
         req->receive_time = rdtscp(NULL);
         req->latency = req->receive_time - req->send_time;
-        requests.push_back(&req);
+        reqs.push_back(req);
 
         FAIL_IF_ERR(
             TRITONSERVER_InferenceResponseError(completed_response),
@@ -714,12 +716,12 @@ int main(int argc, char** argv) {
     std::string output_filename = experiment_label + "-results.csv";
     std::ofstream output(output_filename);
     output << "REQ_ID\tMODEL\tSENT\tRECEIVED\tLATENCY\t" << std::endl;
-    for (auto req: requests) {
+    for (auto req: reqs) {
         output <<
-            req->id << "\t"
-            req->model.name << "\t"
-            req->send_time / cycles_per_ns << "\t"
-            req->receive_time / cycles_per_ns << "\t"
+            req->id << "\t" <<
+            req->model->name << "\t" <<
+            req->send_time / cycles_per_ns << "\t" <<
+            req->receive_time / cycles_per_ns << "\t" <<
             req->latency / cycles_per_ns << std::endl;
     }
     output.close();
