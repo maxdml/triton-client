@@ -98,7 +98,7 @@ class Model {
     public: const std::string name;
     public: Model(std::string &n) : name(n), options(n) {}
 
-    public: std::vector<int32_t> input_data_;
+    private: std::vector<int32_t> input_data_;
     private: tc::InferInput *input_;
     private: tc::InferRequestedOutput *output_;
 
@@ -137,6 +137,7 @@ class Request {
 };
 
 class Schedule {
+    public: std::chrono::seconds duration;
     public: std::chrono::steady_clock::time_point start_time;
     public: std::chrono::steady_clock::time_point end_time;
     public: std::chrono::steady_clock::time_point last_send_time;
@@ -167,11 +168,12 @@ class Schedule {
     }
 
     public: int gen_schedule(std::mt19937 &seed, std::vector<Model *> model_list) {
-        double m = std::log(1e9/rate) - ((sigma * sigma) / 2);
+        double m = std::log((1e9/rate) - std::sqrt(sigma) / 2);
         std::lognormal_distribution<double> ln_dist(m, sigma);
         std::uniform_real_distribution<double> uniform_dist(0.0, 1.0);
         std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
         uint64_t time = 0;
+        uint64_t end_time = duration.count() * 1e9; // in ns
         std::vector<uint16_t> type_counts(models.size(), 0);
         for (uint32_t i = 0; i < n_requests; ++i) {
             // Select request type (0: short, 1:long)
@@ -206,8 +208,7 @@ class Schedule {
             cr->id = i;
             cr->model = model_list[cmd_idx];
         }
-        std::cout << "Created " << n_requests << " requests spanning " << time/1e9 << " s" << std::endl;
-        std::cout << "Average interval: " << time / 3000.0 << " ns" << std::endl;
+        std::cout << "Created " << n_requests << " requests spanning " << time << " ns" << std::endl;
         /*
         for (int i = 0; i < models.size(); ++i) {
             if (type_counts[i] > 0) {
@@ -260,12 +261,14 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
     try {
         YAML::Node config = YAML::LoadFile(schedule_file);
         YAML::Node rate = config["rate"];
+        YAML::Node duration = config["duration"];
         YAML::Node uniform = config["uniform"];
         YAML::Node ratios = config["ratios"];
         YAML::Node models = config["models"];
         YAML::Node versions = config["versions"];
 
         sched->rate = rate.as<double>();
+        sched->duration = std::chrono::seconds(duration.as<uint64_t>());
         sched->uniform = uniform.as<bool>();
         sched->models = models.as<std::vector<std::string>>();
         versions = versions.as<std::vector<uint16_t>>();
@@ -300,15 +303,6 @@ int parse_schedule(std::string &schedule_file, Schedule *sched) {
             } else if (model->name == "resnet50") {
                 std::vector<int64_t> shape{1, 3, 224, 224};
                 model->create_model_io("input_1", "output_0", "FP32", shape);
-            } else if (model->name == "resnet34") {
-                std::vector<int64_t> shape{1, 3, 224, 224};
-                model->create_model_io("input_1", "output_0", "FP32", shape);
-            } else if (model->name == "resnet18") {
-                std::vector<int64_t> shape{1, 3, 224, 224};
-                model->create_model_io("input_1", "output_0", "FP32", shape);
-            } else if (model->name == "squeezenet1_1") {
-                std::vector<int64_t> shape{1, 3, 224, 224};
-                model->create_model_io("input_1", "output_0", "FP32", shape);
             } else if (model->name == "ultraface320") {
                 std::vector<int64_t> shape{1, 3, 240, 320};
                 model->create_model_io("input_1", "output_0", "FP32", shape);
@@ -339,11 +333,10 @@ int receive_callback(tc::InferResult *result) {
             std::lock_guard<std::mutex> lock(cbtex);
             auto req = current_sched->requests[std::stoi(rid)];
             req->receive_time = rdtscp(NULL);
-            // std::cout << "received result for query " << rid << std::endl;
+            //std::cout << "received result for query " << rid << std::endl;
             //uint64_t end_time = rdtscp(NULL) - send_times[std::stoi(rid)];
             //latencies.push_back(end_time);
             recv_requests++;
-            req->model->input_data_.clear();
         }
     } else {
         std::cout << "Error processing request " << result->RequestStatus() << std::endl;
@@ -395,7 +388,7 @@ int main(int argc, char** argv) {
     parse_schedule(schedule_file, main_sched);
 
     warmup_sched = new Schedule();
-    warmup_sched->n_requests = njobs * .01;
+    warmup_sched->n_requests = njobs / 10;
     warmup_sched->sigma = sigma;
     parse_schedule(schedule_file, warmup_sched);
 
@@ -407,7 +400,6 @@ int main(int argc, char** argv) {
 
     std::cout << "Warming up the GPU with " << warmup_sched->n_requests << " requests" << std::endl;
     current_sched = warmup_sched;
-    bool warn = true;
     while (recv_requests < warmup_sched->n_requests) {
         if (warmup_sched->send_index < warmup_sched->n_requests) {
             std::this_thread::sleep_for(std::chrono::microseconds(1000));
@@ -421,12 +413,7 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lock(cbtex);
                 warmup_sched->send_index++;
                 req->send_time = rdtscp(NULL);
-            // std::cout << recv_requests << std::endl;
             }
-        }
-        if (warn and warmup_sched->send_index == warmup_sched->n_requests) {
-            std::cout << "sent all warmup requests" << std::endl;
-            warn = false;
         }
     }
     std::cout << "Warmup done." << std::endl;
@@ -460,10 +447,6 @@ int main(int argc, char** argv) {
                 //send_times[main_sched->send_index++] = rdtscp(NULL);
                 main_sched->send_index++;
                 req->send_time = rdtscp(NULL);
-                if (main_sched->send_index % 100 == 0) {
-                    std::cout << "Sending req " << main_sched->send_index << std::endl;
-                    std::cout << "in flight: " << inflight << std::endl;
-                }
             }
             next_send_time = (*send_time_it + start_offset);
             send_time_it++;

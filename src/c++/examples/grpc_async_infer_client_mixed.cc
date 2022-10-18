@@ -600,7 +600,7 @@ int log_latency(Histogram_t &hist,
         hist.min = 0; hist.max = 0; hist.count = 0; hist.total = 0;
         auto reqs = rtype.second;
         for (uint64_t i = 0; i < reqs.size(); ++i) {
-            // Store values in nanoseconds
+            // Store values in microseconds
             insert_value(&hist, (reqs[i]->receive_time - reqs[i]->send_time) / cycles_per_us);
         }
         if (hist.count == 0) {

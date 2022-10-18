@@ -99,6 +99,7 @@ if(TRITON_ENABLE_CC_GRPC)
   #
   # Max grpc client with mixed workloads
   #
+  # add_executable(grpc_async_infer_client_mixed grpc_async_infer_client_mixed.cc)
   add_executable(grpc_async_infer_client_mixed grpc2.cc)
   target_link_libraries(
     grpc_async_infer_client_mixed
