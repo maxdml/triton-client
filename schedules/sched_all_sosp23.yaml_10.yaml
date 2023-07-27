@@ -1,0 +1,6 @@
+uniform: false
+duration: 100
+models: [densenet-9, googlenet-9, inception_v3, squeezenet1.1-7, mobilenetv2-7, resnet18-v2-7, resnet34-v2-7, resnet50-v2-7, mnist-8]
+versions: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+ratios: [.0069, .0053, .0013, .0088, .0254, .0268, .0166, .0073, .9011]
+rate: 10

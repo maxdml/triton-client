@@ -1,4 +1,4 @@
-# Copyright 2020-2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright (c) 2020-2021, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -97,160 +97,18 @@ endif() # TRITON_ENABLE_CC_HTTP AND TRITON_ENABLE_CC_GRPC
 
 if(TRITON_ENABLE_CC_GRPC)
   #
-  # simple_grpc_health_metadata
+  # Max grpc client with mixed workloads
   #
-  add_executable(simple_grpc_health_metadata simple_grpc_health_metadata.cc)
+  add_executable(grpc_async_infer_client_mixed grpc2.cc)
   target_link_libraries(
-    simple_grpc_health_metadata
+    grpc_async_infer_client_mixed
     PRIVATE
       grpcclient_static
+      boost_program_options
+      yaml-cpp
   )
   install(
-    TARGETS simple_grpc_health_metadata
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_model_control
-  #
-  add_executable(simple_grpc_model_control simple_grpc_model_control.cc)
-  target_link_libraries(
-    simple_grpc_model_control
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_model_control
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_infer_client
-  #
-  add_executable(simple_grpc_infer_client simple_grpc_infer_client.cc)
-  target_link_libraries(
-    simple_grpc_infer_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_infer_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_keepalive_client
-  #
-  add_executable(simple_grpc_keepalive_client simple_grpc_keepalive_client.cc)
-  target_link_libraries(
-    simple_grpc_keepalive_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_keepalive_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_custom_args_client
-  #
-  add_executable(simple_grpc_custom_args_client simple_grpc_custom_args_client.cc)
-  target_link_libraries(
-    simple_grpc_custom_args_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_custom_args_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_string_infer_client
-  #
-  add_executable(simple_grpc_string_infer_client simple_grpc_string_infer_client.cc)
-  target_link_libraries(
-    simple_grpc_string_infer_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_string_infer_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_async_infer_client
-  #
-  add_executable(simple_grpc_async_infer_client simple_grpc_async_infer_client.cc)
-  target_link_libraries(
-    simple_grpc_async_infer_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_async_infer_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_sequence_stream_infer_client
-  #
-  add_executable(simple_grpc_sequence_stream_infer_client simple_grpc_sequence_stream_infer_client.cc)
-  target_link_libraries(
-    simple_grpc_sequence_stream_infer_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_sequence_stream_infer_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_sequence_sync_infer_client
-  #
-  add_executable(simple_grpc_sequence_sync_infer_client simple_grpc_sequence_sync_infer_client.cc)
-  target_link_libraries(
-    simple_grpc_sequence_sync_infer_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_sequence_sync_infer_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_shm_client
-  #
-  add_executable(
-    simple_grpc_shm_client
-    simple_grpc_shm_client.cc
-    $<TARGET_OBJECTS:shm-utils-library>
-  )
-  target_link_libraries(
-    simple_grpc_shm_client
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_shm_client
-    RUNTIME DESTINATION bin
-  )
-
-  #
-  # simple_grpc_custom_repeat
-  #
-  add_executable(simple_grpc_custom_repeat simple_grpc_custom_repeat.cc)
-  target_link_libraries(
-    simple_grpc_custom_repeat
-    PRIVATE
-      grpcclient_static
-  )
-  install(
-    TARGETS simple_grpc_custom_repeat
+    TARGETS grpc_async_infer_client_mixed
     RUNTIME DESTINATION bin
   )
 

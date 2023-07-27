@@ -1,0 +1,6 @@
+ratios: [1.0]
+uniform: false
+duration: 5
+models: [squeezenet1_1]
+versions: [1]
+rate: 150

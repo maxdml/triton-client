@@ -1,0 +1,66 @@
+- recompile tensorflow and TVM
+    * Need same GCC and same GCC options
+- enable TVM as a backend to tensorflow
+- compiling the models:
+    * custom version of tensorflow and TVM work together
+    * pytorch -> ONNX -> load with TVM and save as a .dso -> load .dso in tensorflow format
+- triton loads a tensorflow model that wraps TVM
+
+
+
+# To generate torchvision onnx models
+docker run -it --gpus=1 -v/home/kelvinng/vintest:/workspace/vintest tensorflow:20.11-tf2-py3-tvm
+pip install torch==1.8.0+cu111 torchvision==0.9.0+cu111 -f https://download.pytorch.org/whl/torch_stable.html
+# python:
+import torch
+import torchvision.models as models
+model = models.inception_v3(pretrained=True).cuda()
+x = torch.randn(1, 3, 224, 224, device='cuda')
+input_names = [ "input_1" ] + [ "learned_%d" % i for i in range(16) ]
+output_names = [ "output_1" ]
+torch.onnx.export(model, x, "inception_v3.onnx", input_names=input_names, output_names=output_names)
+
+
+# COMPILER (kelvinng@zebra07)
+docker run -it --gpus=1 --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 -v/home/kelvinng/vintest:/workspace/vintest tensorflow:20.11-tf2-py3-tvm
+source ~/.bash_profile
+cd /workspace/vintest/baseline_models
+convert_onnx_to_dso.py                  # compiles custom op to a shared library
+convert_dso_to_tfsaved2.py              # creates a tensorflow savedmodel
+
+# SERVER (kelvinng@zebra07)
+docker run -it --rm --gpus=1 --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 -p8000:8000 -p8001:8001 -p8002:8002 -v/home/kelvinng/vintest/baseline_models/triton_savedmodels:/models -v/home/kelvinng/vintest:/workspace/vintest tritonserver:20.11-py3-tvm
+source ~/.bash_profile
+LD_PRELOAD=libtvm_dso_op.so tritonserver --model-repository=/models --backend-config=tensorflow,version=2
+
+# CLIENT (kelvinng@zebra07)
+docker run -it --rm --net=host -v/home/kelvinng/vintest:/workspace/vintest nvcr.io/nvidia/tritonserver:20.11-py3-clientsdk
+perf_client
+
+
+
+
+
+
+# triton client
+
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=`pwd`/install -DTRITON_ENABLE_CC_HTTP=ON -DTRITON_ENABLE_CC_GRPC=ON -DTRITON_ENABLE_PERF_ANALYZER=ON -DTRITON_ENABLE_GPU=ON -DTRITON_ENABLE_EXAMPLES=ON -DTRITON_ENABLE_TESTS=ON ..
+
+
+
+
+
+docker run -it --rm --gpus=1 --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 -p8000:8000 -p8001:8001 -p8002:8002 -v/home/liuv/allis-baselines/baseline_models/triton_savedmodels2:/models -v/home/liuv/allis-baselines:/workspace/vintest tritonserver:20.11-py3-tvm
+source ~/.bash_profile
+cd /workspace/vintest/baseline_models
+LD_PRELOAD=libtvm_dso_op.so tritonserver --model-repository=/models --backend-config=tensorflow,version=2
+
+
+
+
+
+- Copy Kelvin's models
+- run /home/liuv/allis-baselines/baseline_models/convert_dso_to_tfsaved2.py with a new output path
+- docker run with this new output path
+
+

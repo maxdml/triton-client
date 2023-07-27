@@ -1,0 +1,6 @@
+ratios: [1.0]
+uniform: false
+duration: 5
+models: [densenet-9]
+versions: [1]
+rate: 150
