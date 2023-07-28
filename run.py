@@ -5,13 +5,11 @@ import time
 import subprocess
 from argparse import ArgumentParser
 
-client_binary = '/home/maxdml/triton-client/build/cc-clients/examples/grpc_async_infer_client_mixed'
-
-results_dir = '/home/maxdml/triton-client/sosp32_results/'
-
 parser = ArgumentParser()
 parser.add_argument('load_range', nargs=3, type=int, default=[10, 50])
 parser.add_argument('templates', nargs='+', type=str)
+parser.add_argument('-b', '--binary', dest='client_binary');
+parser.add_argument('-o', '--output_dir', dest='output_dir');
 args = parser.parse_args()
 
 for s in ['1.5', '2']:
@@ -26,9 +24,9 @@ for s in ['1.5', '2']:
                 f.write(cfg_str)
                 f.write('rate: ' + str(load))
 
-            results_file = results_dir + s + '/results_' + str(load) + '_' + s + '.csv'
+            results_file = args.output_dir + s + '/results_' + str(load) + '_' + s + '.csv'
 
-            a = [client_binary, '--ip', '172.17.0.2', '--port', '8001', '-s', fname, '-o', results_file, '--sigma', s, '--num-jobs', '1000']
+            a = [args.client_binary, '--ip', '172.17.0.2', '--port', '8001', '-s', fname, '-o', results_file, '--sigma', s, '--num-jobs', '1000']
 
             print(f'Run with config {fname}, args {a}')
             p = subprocess.Popen(a, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
